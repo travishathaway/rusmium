@@ -1,0 +1,5 @@
+# Rust build output
+/target
+
+# pixi environment (reproduced from pixi.lock)
+/.pixi

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="rusmium-test-fixture">
+  <node id="1" version="1" lat="52.0000000" lon="13.0000000">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Café Kranzler"/>
+  </node>
+  <node id="2" version="3" lat="52.1000000" lon="13.1000000"/>
+  <node id="3" version="1" lat="52.2000000" lon="13.2000000"/>
+  <way id="10" version="2">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <tag k="highway" v="residential"/>
+  </way>
+  <relation id="100" version="1">
+    <member type="way" ref="10" role="outer"/>
+    <member type="node" ref="1" role="admin_centre"/>
+    <tag k="type" v="multipolygon"/>
+  </relation>
+</osm>

@@ -1,0 +1,44 @@
+schema: spec-driven
+
+context: |
+  rusmium: idiomatic Rust bindings for the header-only C++ library libosmium
+  (OpenStreetMap data read/write).
+
+  Tech stack:
+  - Rust (edition 2021), single crate `rusmium`.
+  - FFI via the `cxx` crate. The bridge lives in `src/ffi.rs`; a hand-written
+    C++ shim in `cpp/shim.{h,cc}` flattens osmium's templates/CRTP into opaque
+    types (OsmReader/Cursor/OsmWriter) and plain functions. Structured data
+    crosses as primitives and `Vec`s of primitives/String, never shared cxx
+    structs (avoids a generated-header include-ordering hazard).
+  - Native deps (libosmium, protozero, zlib, expat, bzip2, lz4, cxx-compiler,
+    rust) are provisioned via pixi/conda-forge (`pixi.toml` + `pixi.lock`).
+    ALWAYS build/test through pixi: `pixi run build`, `pixi run test`,
+    `pixi run roundtrip`. `build.rs` discovers the env prefix from CONDA_PREFIX
+    and bakes an rpath for runtime lib resolution.
+
+  Conventions:
+  - Read model is a pull-based `Iterator<Item = Object>` with copy-out ownership
+    (objects are owned Rust values that survive iteration).
+  - Errors surface as `Result` (cxx converts C++ exceptions to Err).
+  - v1 non-goals: zero-copy/borrowed objects, geometry assembly, native
+    visitor/handler API.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours

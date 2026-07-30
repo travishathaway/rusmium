@@ -1,0 +1,27 @@
+[workspace]
+name = "rusmium"
+version = "0.1.0"
+description = "Idiomatic Rust bindings for the libosmium C++ OpenStreetMap library"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64", "osx-64"]
+
+[tasks]
+build = "cargo build"
+test = "cargo test"
+roundtrip = "cargo test --test roundtrip"
+fmt = "cargo fmt --check"
+lint = "cargo clippy --all-targets -- -D warnings"
+
+[dependencies]
+# Header-only C++ libraries providing the OSM data model and PBF codec.
+libosmium = "*"
+protozero = "*"
+# Native libraries libosmium links against for compression and XML parsing.
+zlib = "*"
+expat = "*"
+bzip2 = "*"
+lz4 = "*"
+# Toolchain: a C++ compiler ABI-matched to the conda-built libraries above,
+# plus the Rust toolchain, so the whole build is reproducible from the lockfile.
+cxx-compiler = "*"
+rust = "*"

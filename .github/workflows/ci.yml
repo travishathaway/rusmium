@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-latest -> linux-64, macos-latest -> osx-arm64.
+        # Both platforms are pinned in pixi.lock.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          # Match the pixi that generated pixi.lock (lock format v7).
+          pixi-version: v0.75.0
+          # Fail if the lockfile is out of date with pixi.toml.
+          frozen: true
+          cache: true
+
+      - name: Format check
+        run: pixi run fmt
+
+      - name: Clippy
+        run: pixi run lint
+
+      - name: Test
+        run: pixi run test
