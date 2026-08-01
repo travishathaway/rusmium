@@ -3,3 +3,8 @@
 
 # pixi environment (reproduced from pixi.lock)
 /.pixi
+
+.idea/
+
+# osm pbf files
+*.osm.pbf

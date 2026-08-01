@@ -57,6 +57,23 @@ pixi run roundtrip   # the read→write→read round-trip test
 > and will fail fast with a message telling you to build through pixi — rather
 > than a confusing missing-header or missing-symbol error.
 
+## Filtering by bounding box
+
+`examples/bbox_filter.rs` extracts the part of an OSM file that intersects a
+bounding box, given as `min_lon,min_lat,max_lon,max_lat`:
+
+```bash
+pixi run cargo run --example bbox_filter -- in.osm.pbf out.osm.pbf 13.0,52.0,13.5,52.5
+```
+
+It uses the **complete-ways** strategy: nodes inside the box are kept, any way
+touching one is kept *whole* (its out-of-box nodes are pulled back in so geometry
+stays complete), and relations referencing a kept object are kept. This is a
+reference-based extract, not geometric clipping — a boundary-crossing way is kept
+entire, not cut at the edge. The [`Bbox`](src/lib.rs) type it builds on (inclusive
+containment, antimeridian wrap-around, `FromStr` parsing) is part of the public
+library API.
+
 ## Architecture
 
 libosmium is header-only, heavily templated, and built around a compile-time

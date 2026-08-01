@@ -9,6 +9,7 @@ platforms = ["linux-64", "linux-aarch64", "osx-arm64", "osx-64"]
 build = "cargo build"
 test = "cargo test"
 roundtrip = "cargo test --test roundtrip"
+example-bbox = "cargo run --example bbox_filter --"
 fmt = "cargo fmt --check"
 lint = "cargo clippy --all-targets -- -D warnings"
 

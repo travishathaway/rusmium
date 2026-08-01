@@ -56,6 +56,94 @@ pub struct Location {
     pub lat: f64,
 }
 
+/// An axis-aligned WGS84 bounding box with inclusive bounds.
+///
+/// The corners are stored as given — `new` does **not** reorder longitudes — so
+/// a box whose `min.lon` exceeds `max.lon` is meaningful: it denotes a region
+/// that crosses the ±180° antimeridian, and [`Bbox::contains`] treats longitude
+/// as wrapping for it. Latitudes are expected to satisfy `min.lat <= max.lat`.
+///
+/// ```
+/// use rusmium::{Bbox, Location};
+/// let berlin: Bbox = "13.0,52.0,13.5,52.5".parse().unwrap();
+/// assert!(berlin.contains(&Location { lon: 13.4, lat: 52.5 })); // inclusive edge
+/// assert!(!berlin.contains(&Location { lon: 14.0, lat: 52.5 }));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bbox {
+    /// South-west corner (minimum longitude and latitude).
+    pub min: Location,
+    /// North-east corner (maximum longitude and latitude).
+    pub max: Location,
+}
+
+impl Bbox {
+    /// Build a box from its minimum and maximum corners. Longitudes are stored
+    /// as provided (see the type docs on antimeridian-crossing boxes).
+    pub fn new(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> Bbox {
+        Bbox {
+            min: Location {
+                lon: min_lon,
+                lat: min_lat,
+            },
+            max: Location {
+                lon: max_lon,
+                lat: max_lat,
+            },
+        }
+    }
+
+    /// Whether `loc` falls inside the box. Bounds are inclusive on all edges.
+    ///
+    /// Latitude is tested as `min.lat <= lat <= max.lat`. Longitude is tested as
+    /// `min.lon <= lon <= max.lon` for a normal box; for an antimeridian-crossing
+    /// box (`min.lon > max.lon`) longitude wraps, matching `lon >= min.lon` OR
+    /// `lon <= max.lon`.
+    pub fn contains(&self, loc: &Location) -> bool {
+        let lat_in = loc.lat >= self.min.lat && loc.lat <= self.max.lat;
+        let lon_in = if self.min.lon <= self.max.lon {
+            loc.lon >= self.min.lon && loc.lon <= self.max.lon
+        } else {
+            loc.lon >= self.min.lon || loc.lon <= self.max.lon
+        };
+        lat_in && lon_in
+    }
+}
+
+/// Error returned when parsing a [`Bbox`] from its string form fails.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BboxParseError(String);
+
+impl fmt::Display for BboxParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid bounding box: {}", self.0)
+    }
+}
+
+impl std::error::Error for BboxParseError {}
+
+impl std::str::FromStr for Bbox {
+    type Err = BboxParseError;
+
+    /// Parse `"min_lon,min_lat,max_lon,max_lat"` (four comma-separated numbers).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(',').collect();
+        if parts.len() != 4 {
+            return Err(BboxParseError(format!(
+                "expected 4 comma-separated numbers (min_lon,min_lat,max_lon,max_lat), got {}",
+                parts.len()
+            )));
+        }
+        let mut vals = [0.0f64; 4];
+        for (i, part) in parts.iter().enumerate() {
+            vals[i] = part.trim().parse::<f64>().map_err(|_| {
+                BboxParseError(format!("field {} is not a number: {:?}", i + 1, part))
+            })?;
+        }
+        Ok(Bbox::new(vals[0], vals[1], vals[2], vals[3]))
+    }
+}
+
 /// A member of a relation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Member {
@@ -395,5 +483,61 @@ mod tests {
             v.split('.').count() == 3 && v.starts_with('2'),
             "unexpected libosmium version string: {v:?}"
         );
+    }
+
+    fn loc(lon: f64, lat: f64) -> Location {
+        Location { lon, lat }
+    }
+
+    #[test]
+    fn bbox_contains_inside_and_outside() {
+        let b = Bbox::new(13.0, 52.0, 14.0, 53.0);
+        assert!(b.contains(&loc(13.5, 52.5)));
+        assert!(!b.contains(&loc(12.9, 52.5)), "west of box");
+        assert!(!b.contains(&loc(14.1, 52.5)), "east of box");
+        assert!(!b.contains(&loc(13.5, 51.9)), "south of box");
+        assert!(!b.contains(&loc(13.5, 53.1)), "north of box");
+    }
+
+    #[test]
+    fn bbox_bounds_are_inclusive() {
+        let b = Bbox::new(13.0, 52.0, 14.0, 53.0);
+        assert!(b.contains(&loc(13.0, 52.0)), "SW corner");
+        assert!(b.contains(&loc(14.0, 53.0)), "NE corner");
+        assert!(b.contains(&loc(13.0, 52.5)), "west edge");
+        assert!(b.contains(&loc(13.5, 53.0)), "north edge");
+    }
+
+    #[test]
+    fn bbox_wraps_across_antimeridian() {
+        // A box from +170° east to -170° west spans the seam through ±180°.
+        let b = Bbox::new(170.0, -10.0, -170.0, 10.0);
+        assert!(b.contains(&loc(175.0, 0.0)), "just east of min");
+        assert!(b.contains(&loc(-175.0, 0.0)), "just west of max");
+        assert!(b.contains(&loc(180.0, 0.0)), "on the seam");
+        assert!(!b.contains(&loc(0.0, 0.0)), "excluded middle");
+        assert!(!b.contains(&loc(160.0, 0.0)), "west of min, not wrapped");
+        // Latitude never wraps, even for an antimeridian box.
+        assert!(!b.contains(&loc(175.0, 20.0)), "north of box");
+    }
+
+    #[test]
+    fn bbox_parses_from_string() {
+        let b: Bbox = "13.0,52.0,13.5,52.5".parse().unwrap();
+        assert_eq!(b, Bbox::new(13.0, 52.0, 13.5, 52.5));
+        // Surrounding whitespace on fields is tolerated.
+        let b2: Bbox = " -1.5, 2.0 ,3.0,4.25 ".parse().unwrap();
+        assert_eq!(b2, Bbox::new(-1.5, 2.0, 3.0, 4.25));
+    }
+
+    #[test]
+    fn bbox_parse_rejects_malformed() {
+        assert!("13.0,52.0,13.5".parse::<Bbox>().is_err(), "too few fields");
+        assert!(
+            "13.0,52.0,13.5,52.5,1".parse::<Bbox>().is_err(),
+            "too many fields"
+        );
+        assert!("13.0,52.0,x,52.5".parse::<Bbox>().is_err(), "non-numeric");
+        assert!("".parse::<Bbox>().is_err(), "empty");
     }
 }
