@@ -1,0 +1,55 @@
+# Pre-commit hooks, run by prek (a drop-in pre-commit replacement written in
+# Rust, installed in the `dev` pixi environment).
+#
+#   pixi run -e dev hooks    # install the git hooks, once per clone
+#   pixi run -e dev check    # run every hook over the whole tree, as CI does
+#
+# The Rust hooks shell out through `pixi run -e dev` rather than calling cargo
+# directly: git invokes hooks from a bare shell where the pixi environment is
+# not active, and the toolchain lives in that environment.
+#
+# `cargo test` builds the C++ shim and libosmium, so it is too slow for every
+# commit and runs on pre-push instead.
+
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+      - id: check-added-large-files
+        # The OSM files used for benchmarking are hundreds of MB and already
+        # gitignored; this is the backstop if one is ever force-added.
+        args: [--maxkb=1024]
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: pixi run -e dev fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        # Also triggered by C++ and manifest changes: the shim is compiled into
+        # the crate, so those can break the build clippy runs on.
+        entry: pixi run -e dev lint
+        language: system
+        files: \.(rs|cc|h|toml)$
+        pass_filenames: false
+
+      - id: cargo-test
+        name: cargo test
+        entry: pixi run -e dev test
+        language: system
+        files: \.(rs|cc|h|toml)$
+        pass_filenames: false
+        stages: [pre-push]

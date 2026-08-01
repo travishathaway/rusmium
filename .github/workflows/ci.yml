@@ -10,6 +10,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Formatting, clippy and the file hygiene hooks all run through prek, so CI
+  # enforces exactly what a contributor's pre-commit hook does — one definition
+  # in .pre-commit-config.yaml rather than two that can drift apart.
+  checks:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          # Match the pixi that generated pixi.lock (lock format v7).
+          pixi-version: v0.75.0
+          environments: dev
+          # Fail if the lockfile is out of date with pixi.toml.
+          frozen: true
+          cache: true
+
+      - name: Run pre-commit hooks
+        run: pixi run -e dev check
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -25,17 +47,12 @@ jobs:
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          # Match the pixi that generated pixi.lock (lock format v7).
           pixi-version: v0.75.0
-          # Fail if the lockfile is out of date with pixi.toml.
+          # Only the build/runtime dependencies; the dev tooling is not needed
+          # here and would be a wasted download on both matrix legs.
+          environments: default
           frozen: true
           cache: true
-
-      - name: Format check
-        run: pixi run fmt
-
-      - name: Clippy
-        run: pixi run lint
 
       - name: Test
         run: pixi run test

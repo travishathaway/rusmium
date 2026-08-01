@@ -16,6 +16,8 @@ bench-bbox = "bash scripts/bench_bbox.sh"
 fmt = "cargo fmt --check"
 lint = "cargo clippy --all-targets -- -D warnings"
 
+# Everything needed to build and run the crate. Anyone consuming rusmium from
+# source needs exactly this set and nothing more.
 [dependencies]
 # Header-only C++ libraries providing the OSM data model and PBF codec.
 libosmium = "*"
@@ -29,3 +31,20 @@ lz4 = "*"
 # plus the Rust toolchain, so the whole build is reproducible from the lockfile.
 cxx-compiler = "*"
 rust = "*"
+
+# Tooling only contributors need. Kept out of the default environment so a
+# plain `pixi install` stays lean.
+[feature.dev.dependencies]
+# Drop-in pre-commit replacement, reads .pre-commit-config.yaml.
+prek = ">=0.4.11,<0.5"
+
+[feature.dev.tasks]
+# Install the git hooks once per clone.
+hooks = "prek install --hook-type pre-commit --hook-type pre-push"
+# Run every pre-commit-stage hook over the whole tree, as CI does.
+check = "prek run --all-files"
+
+[environments]
+# One solve group so both environments resolve to identical package versions.
+default = { solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
