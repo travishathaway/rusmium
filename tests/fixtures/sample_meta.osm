@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Same shape as sample.osm, but with full object metadata. Used to check
+     that Writer::copy preserves timestamp/uid/user/changeset, which the
+     Object-based Writer::add path cannot represent and silently drops. -->
+<osm version="0.6" generator="rusmium-test-fixture">
+  <node id="1" version="1" timestamp="2020-01-02T03:04:05Z" uid="42" user="alice" changeset="1001" lat="52.0000000" lon="13.0000000">
+    <tag k="amenity" v="cafe"/>
+  </node>
+  <node id="2" version="3" timestamp="2021-06-07T08:09:10Z" uid="43" user="bob" changeset="1002" lat="52.1000000" lon="13.1000000"/>
+  <way id="10" version="2" timestamp="2022-11-12T13:14:15Z" uid="44" user="carol" changeset="1003">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <tag k="highway" v="residential"/>
+  </way>
+  <relation id="100" version="1" timestamp="2023-03-04T05:06:07Z" uid="45" user="dave" changeset="1004">
+    <member type="way" ref="10" role="outer"/>
+    <tag k="type" v="multipolygon"/>
+  </relation>
+</osm>

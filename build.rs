@@ -14,6 +14,15 @@ fn main() {
         .include(&manifest)
         .include(&include)
         .std("c++17")
+        // libosmium and protozero are header-only, so the entire PBF codec is
+        // compiled *here* rather than linked from a prebuilt library. `cc`
+        // otherwise forwards cargo's OPT_LEVEL, which means a `cargo build`
+        // without --release ships a decoder built at -O0 with osmium's
+        // asserts live — measurably an order of magnitude slower. Pin the
+        // native side to optimized, the way cargo's
+        // `[profile.dev.package."*"]` treats third-party Rust crates.
+        .opt_level(2)
+        .define("NDEBUG", None)
         .flag_if_supported("-Wno-unused-parameter")
         .compile("rusmium_shim");
 

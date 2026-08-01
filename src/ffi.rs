@@ -30,7 +30,15 @@ pub mod bridge {
 
         /// Open an OSM file for reading, detecting the format from the path.
         /// Errors surface as `Err` (the C++ side throws; cxx converts).
-        fn open_reader(path: &str) -> Result<UniquePtr<OsmReader>>;
+        ///
+        /// `entity_bits` is libosmium's `osm_entity_bits` mask (node=1, way=2,
+        /// relation=4) and `read_metadata` selects `read_meta::yes`/`no`;
+        /// together they let the parser skip decoding work outright.
+        fn open_reader(
+            path: &str,
+            entity_bits: u8,
+            read_metadata: bool,
+        ) -> Result<UniquePtr<OsmReader>>;
 
         /// Create a cursor positioned before the first object.
         fn make_cursor(reader: Pin<&mut OsmReader>) -> UniquePtr<Cursor>;
@@ -45,10 +53,21 @@ pub mod bridge {
         fn object_id(cursor: &Cursor) -> i64;
         fn object_version(cursor: &Cursor) -> u32;
 
+        /// Object metadata; zero/empty unless the reader was opened with
+        /// metadata enabled. Timestamp is seconds since the epoch, 0 if unset.
+        fn object_timestamp(cursor: &Cursor) -> i64;
+        fn object_uid(cursor: &Cursor) -> u32;
+        fn object_user(cursor: &Cursor) -> String;
+        fn object_changeset(cursor: &Cursor) -> i64;
+
         /// Whether the current node has a valid location.
         fn node_location_valid(cursor: &Cursor) -> bool;
         fn node_lon(cursor: &Cursor) -> f64;
         fn node_lat(cursor: &Cursor) -> f64;
+
+        /// Number of tags on the current object; lets callers avoid the two
+        /// allocating calls below when there are none.
+        fn tag_count(cursor: &Cursor) -> usize;
 
         /// Tags as parallel key/value vectors (same length, same order).
         fn tag_keys(cursor: &Cursor) -> Vec<String>;
@@ -57,10 +76,18 @@ pub mod bridge {
         /// Ordered node references of the current way (empty otherwise).
         fn way_node_refs(cursor: &Cursor) -> Vec<i64>;
 
+        /// As `way_node_refs`, but into a caller-owned vector (replacing its
+        /// contents) so one buffer can serve a whole pass.
+        fn way_node_refs_into(cursor: &Cursor, out: &mut Vec<i64>);
+
         /// Members of the current relation as parallel vectors.
         fn relation_member_kinds(cursor: &Cursor) -> Vec<u8>;
         fn relation_member_refs(cursor: &Cursor) -> Vec<i64>;
         fn relation_member_roles(cursor: &Cursor) -> Vec<String>;
+
+        /// As the two above, into caller-owned vectors. Roles are excluded —
+        /// they are the only allocating part and are rarely needed.
+        fn relation_members_into(cursor: &Cursor, kinds: &mut Vec<u8>, refs: &mut Vec<i64>);
 
         // --- writing ---
 
@@ -104,6 +131,10 @@ pub mod bridge {
             keys: &Vec<String>,
             values: &Vec<String>,
         ) -> Result<()>;
+
+        /// Copy the cursor's current object straight into the writer's buffer:
+        /// one memcpy, with metadata and tags preserved exactly as read.
+        fn writer_copy(writer: Pin<&mut OsmWriter>, cursor: &Cursor) -> Result<()>;
 
         /// Flush all appended objects and close the file.
         fn finish_writer(writer: Pin<&mut OsmWriter>) -> Result<()>;

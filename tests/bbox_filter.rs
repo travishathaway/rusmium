@@ -101,6 +101,38 @@ fn box_covering_everything_keeps_all() {
 }
 
 #[test]
+fn all_idset_backends_agree() {
+    // The three representations are a memory/speed trade only: for any input
+    // they must select exactly the same objects.
+    use bbox_filter::{extract_with, Backend};
+
+    let bbox = Bbox::new(12.95, 51.95, 13.15, 52.15);
+    let mut results = Vec::new();
+
+    for backend in [Backend::Auto, Backend::Sorted, Backend::Dense] {
+        let out = out_path(&format!("bbox-backend-{backend:?}.osm.pbf"));
+        let _ = std::fs::remove_file(&out);
+        let stats = extract_with(&fixture("sample.osm"), &out, &bbox, backend).expect("extract");
+        let objs: Vec<_> = Reader::open(&out).expect("reopen output").collect();
+        let _ = std::fs::remove_file(&out);
+        results.push((backend, stats, objs));
+    }
+
+    let (first_backend, first_stats, first_objs) = &results[0];
+    for (backend, stats, objs) in &results[1..] {
+        assert_eq!(
+            stats, first_stats,
+            "{backend:?} and {first_backend:?} disagree on counts"
+        );
+        assert_eq!(
+            objs, first_objs,
+            "{backend:?} and {first_backend:?} disagree on contents"
+        );
+    }
+    assert!(!first_objs.is_empty(), "fixture should select something");
+}
+
+#[test]
 fn lone_in_box_node_survives_without_a_way() {
     // Box around node 3 only. Way 10 touches node 3, so this fixture keeps the
     // way — but node 3 must be present regardless via required_nodes seeding.

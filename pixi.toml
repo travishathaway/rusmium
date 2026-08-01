@@ -9,7 +9,10 @@ platforms = ["linux-64", "linux-aarch64", "osx-arm64", "osx-64"]
 build = "cargo build"
 test = "cargo test"
 roundtrip = "cargo test --test roundtrip"
-example-bbox = "cargo run --example bbox_filter --"
+# Release: the extract is a bulk data job, and a debug build of the Rust side
+# costs several times the wall clock on a real-world file.
+example-bbox = "cargo run --release --example bbox_filter --"
+bench-bbox = "bash scripts/bench_bbox.sh"
 fmt = "cargo fmt --check"
 lint = "cargo clippy --all-targets -- -D warnings"
 

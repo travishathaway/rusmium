@@ -39,13 +39,23 @@ pub enum ObjectKind {
 }
 
 impl ObjectKind {
-    fn from_raw(v: u8) -> Self {
+    /// Decode libosmium's `item_type` byte (node=1, way=2, relation=3).
+    ///
+    /// Exposed because the allocation-free bulk accessors — notably
+    /// [`ObjectRef::relation_members_into`] — hand back member kinds in that
+    /// raw encoding, since a Rust enum cannot cross the C++ bridge directly.
+    pub fn from_item_type(v: u8) -> Option<Self> {
         match v {
-            1 => ObjectKind::Node,
-            2 => ObjectKind::Way,
-            3 => ObjectKind::Relation,
-            other => unreachable!("libosmium yielded an unexpected item_type: {other}"),
+            1 => Some(ObjectKind::Node),
+            2 => Some(ObjectKind::Way),
+            3 => Some(ObjectKind::Relation),
+            _ => None,
         }
+    }
+
+    fn from_raw(v: u8) -> Self {
+        Self::from_item_type(v)
+            .unwrap_or_else(|| unreachable!("libosmium yielded an unexpected item_type: {v}"))
     }
 }
 
@@ -257,6 +267,103 @@ impl Object {
     }
 }
 
+/// A set of object kinds, used to tell a [`Reader`] which ones to decode.
+///
+/// Combine with `|`:
+///
+/// ```
+/// use rusmium::Entities;
+/// let nw = Entities::NODE | Entities::WAY;
+/// assert!(nw.contains(Entities::WAY));
+/// assert!(!nw.contains(Entities::RELATION));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entities(u8);
+
+impl Entities {
+    // Values are libosmium's `osm_entity_bits` and must stay in sync with it.
+    pub const NODE: Entities = Entities(0x01);
+    pub const WAY: Entities = Entities(0x02);
+    pub const RELATION: Entities = Entities(0x04);
+    /// Nodes, ways, and relations — the default.
+    pub const ALL: Entities = Entities(0x07);
+
+    /// Whether every kind in `other` is present in `self`.
+    pub const fn contains(self, other: Entities) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for Entities {
+    type Output = Entities;
+    fn bitor(self, rhs: Entities) -> Entities {
+        Entities(self.0 | rhs.0)
+    }
+}
+
+/// How much of each object a [`Reader`] should decode.
+///
+/// Decoding an OSM file is dominated by the per-object work, so a pass that
+/// only needs ids and geometry can be markedly faster if it says so. Defaults
+/// are full fidelity; each opt-out trades information for speed.
+///
+/// ```no_run
+/// # fn main() -> Result<(), rusmium::Error> {
+/// use rusmium::{Entities, ReadOptions, Reader};
+/// // A pass that only locates nodes: no metadata, no tags, no ways/relations.
+/// let opts = ReadOptions::default()
+///     .metadata(false)
+///     .tags(false)
+///     .entities(Entities::NODE);
+/// for node in Reader::open_with("map.osm.pbf", opts)? {
+///     let _ = node.location();
+/// }
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadOptions {
+    metadata: bool,
+    tags: bool,
+    entities: Entities,
+}
+
+impl Default for ReadOptions {
+    fn default() -> Self {
+        ReadOptions {
+            metadata: true,
+            tags: true,
+            entities: Entities::ALL,
+        }
+    }
+}
+
+impl ReadOptions {
+    /// Whether to decode object metadata. With `false`, the parser skips the
+    /// user name, uid, timestamp and changeset of every object, and
+    /// [`Object::version`] reads as `0`.
+    ///
+    /// Honoured by the **PBF** reader only — libosmium's XML parser always
+    /// reads metadata, so this is a no-op on `.osm` input.
+    pub fn metadata(mut self, yes: bool) -> Self {
+        self.metadata = yes;
+        self
+    }
+
+    /// Whether to copy out tags. With `false`, [`Object::tags`] is always
+    /// empty and no per-object tag allocation happens.
+    pub fn tags(mut self, yes: bool) -> Self {
+        self.tags = yes;
+        self
+    }
+
+    /// Which kinds of object to decode. Kinds left out are never yielded.
+    pub fn entities(mut self, entities: Entities) -> Self {
+        self.entities = entities;
+        self
+    }
+}
+
 /// An error from opening or reading an OSM file.
 #[derive(Debug)]
 pub struct Error(String);
@@ -295,37 +402,194 @@ pub struct Reader {
     cursor: UniquePtr<ffi::Cursor>,
     #[allow(dead_code)]
     reader: UniquePtr<ffi::OsmReader>,
+    read_tags: bool,
 }
 
 impl Reader {
     /// Open an OSM file for reading. The format is detected from the path
     /// (e.g. `.osm.pbf`, `.osm`). Returns an [`Error`] if the file cannot be
     /// opened or is not valid OSM data.
+    ///
+    /// Everything is decoded. Use [`Reader::open_with`] to skip parts you do
+    /// not need.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
+        Self::open_with(path, ReadOptions::default())
+    }
+
+    /// Open an OSM file, decoding only what `options` asks for. See
+    /// [`ReadOptions`].
+    pub fn open_with(path: impl AsRef<Path>, options: ReadOptions) -> Result<Self, Error> {
         let path = path
             .as_ref()
             .to_str()
             .ok_or_else(|| Error("path is not valid UTF-8".to_string()))?;
-        let mut reader = ffi::open_reader(path)?;
+        let mut reader = ffi::open_reader(path, options.entities.0, options.metadata)?;
         let cursor = ffi::make_cursor(reader.pin_mut());
-        Ok(Reader { cursor, reader })
+        Ok(Reader {
+            cursor,
+            reader,
+            read_tags: options.tags,
+        })
     }
 
-    fn read_current(&self) -> Object {
-        let c = self.cursor.as_ref().expect("cursor is never null");
+    /// Advance to the next object and borrow it in place, copying nothing out
+    /// of the decode buffer.
+    ///
+    /// This is the fast path for filtering and counting: accessors on the
+    /// returned [`ObjectRef`] fetch on demand, so a caller that only looks at
+    /// ids pays only for ids. Pair it with [`Writer::copy`] to move objects
+    /// through without ever materialising them.
+    ///
+    /// The view borrows the reader, so it cannot be held across the next call
+    /// or stored — the borrow checker enforces that. Call
+    /// [`ObjectRef::to_owned`] to lift one out.
+    ///
+    /// Note this shares its position with the [`Iterator`] impl: mixing
+    /// `next_ref` and `next` on one reader skips objects.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), rusmium::Error> {
+    /// use rusmium::{ObjectKind, Reader};
+    /// let mut reader = Reader::open("map.osm.pbf")?;
+    /// let mut nodes = 0;
+    /// while let Some(obj) = reader.next_ref() {
+    ///     if obj.kind() == ObjectKind::Node {
+    ///         nodes += 1;
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn next_ref(&mut self) -> Option<ObjectRef<'_>> {
+        if !ffi::advance(self.cursor.pin_mut()) {
+            return None;
+        }
+        Some(ObjectRef {
+            cursor: self.cursor.as_ref().expect("cursor is never null"),
+            read_tags: self.read_tags,
+        })
+    }
+}
+
+/// An OSM object borrowed in place from a [`Reader`]'s decode buffer.
+///
+/// Nothing is copied until you ask for it. Each accessor crosses into C++ on
+/// demand, so the cost of an object is the cost of the fields you actually
+/// read — unlike [`Object`], which materialises everything up front.
+///
+/// Yielded by [`Reader::next_ref`], and valid only until the reader advances.
+pub struct ObjectRef<'a> {
+    cursor: &'a ffi::Cursor,
+    read_tags: bool,
+}
+
+impl ObjectRef<'_> {
+    /// Whether this object is a node, way, or relation.
+    pub fn kind(&self) -> ObjectKind {
+        ObjectKind::from_raw(ffi::object_kind(self.cursor))
+    }
+
+    /// The OSM id.
+    pub fn id(&self) -> i64 {
+        ffi::object_id(self.cursor)
+    }
+
+    /// The object version.
+    pub fn version(&self) -> u32 {
+        ffi::object_version(self.cursor)
+    }
+
+    /// Location, if this is a node with a valid location.
+    ///
+    /// `None` for ways and relations. The kind check is load-bearing, not a
+    /// convenience: the underlying accessors downcast to `osmium::Node`, which
+    /// is only valid once the object is known to be one.
+    pub fn location(&self) -> Option<Location> {
+        if self.kind() != ObjectKind::Node || !ffi::node_location_valid(self.cursor) {
+            return None;
+        }
+        Some(Location {
+            lon: ffi::node_lon(self.cursor),
+            lat: ffi::node_lat(self.cursor),
+        })
+    }
+
+    /// How many tags this object carries.
+    pub fn tag_count(&self) -> usize {
+        ffi::tag_count(self.cursor)
+    }
+
+    /// Last-edit time as seconds since the Unix epoch, or `None` if unset.
+    ///
+    /// Metadata is only present when the reader was opened with
+    /// [`ReadOptions::metadata`] left on (the default). [`Object`] carries no
+    /// metadata at all, so this view is the only way to read it — and
+    /// [`Writer::copy`] the only way to preserve it.
+    pub fn timestamp(&self) -> Option<i64> {
+        match ffi::object_timestamp(self.cursor) {
+            0 => None,
+            secs => Some(secs),
+        }
+    }
+
+    /// Id of the user who last edited this object (`0` when unset).
+    pub fn uid(&self) -> u32 {
+        ffi::object_uid(self.cursor)
+    }
+
+    /// Name of the user who last edited this object (empty when unset).
+    pub fn user(&self) -> String {
+        ffi::object_user(self.cursor)
+    }
+
+    /// Changeset this object's last edit belonged to (`0` when unset).
+    pub fn changeset(&self) -> i64 {
+        ffi::object_changeset(self.cursor)
+    }
+
+    /// Replace `out` with this way's ordered node references.
+    ///
+    /// Reusing one buffer across a pass keeps the loop allocation-free. Empty
+    /// for objects that are not ways.
+    pub fn way_node_refs_into(&self, out: &mut Vec<i64>) {
+        if self.kind() != ObjectKind::Way {
+            out.clear();
+            return;
+        }
+        ffi::way_node_refs_into(self.cursor, out);
+    }
+
+    /// Replace `kinds` and `refs` with this relation's member kinds and
+    /// referenced ids, as parallel vectors. Roles are not fetched — use
+    /// [`ObjectRef::to_owned`] when you need them. Empty for non-relations.
+    pub fn relation_members_into(&self, kinds: &mut Vec<u8>, refs: &mut Vec<i64>) {
+        if self.kind() != ObjectKind::Relation {
+            kinds.clear();
+            refs.clear();
+            return;
+        }
+        ffi::relation_members_into(self.cursor, kinds, refs);
+    }
+
+    /// Copy this object out into a self-contained [`Object`], the same value
+    /// the [`Iterator`] impl on [`Reader`] yields.
+    pub fn to_owned(&self) -> Object {
+        let c = self.cursor;
         let kind = ObjectKind::from_raw(ffi::object_kind(c));
-        let tags = ffi::tag_keys(c)
-            .into_iter()
-            .zip(ffi::tag_values(c))
-            .collect();
+        // Fetching tags costs two vector-returning FFI calls and a heap string
+        // per tag. Most nodes carry none, so check the count first.
+        let tags = if self.read_tags && ffi::tag_count(c) > 0 {
+            ffi::tag_keys(c)
+                .into_iter()
+                .zip(ffi::tag_values(c))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let body = match kind {
-            ObjectKind::Node => {
-                let location = ffi::node_location_valid(c).then(|| Location {
-                    lon: ffi::node_lon(c),
-                    lat: ffi::node_lat(c),
-                });
-                Body::Node { location }
-            }
+            ObjectKind::Node => Body::Node {
+                location: self.location(),
+            },
             ObjectKind::Way => Body::Way {
                 nodes: ffi::way_node_refs(c),
             },
@@ -360,11 +624,7 @@ impl Iterator for Reader {
     type Item = Object;
 
     fn next(&mut self) -> Option<Object> {
-        if ffi::advance(self.cursor.pin_mut()) {
-            Some(self.read_current())
-        } else {
-            None
-        }
+        self.next_ref().map(|obj| obj.to_owned())
     }
 }
 
@@ -447,6 +707,37 @@ impl Writer {
                 )?;
             }
         }
+        Ok(())
+    }
+
+    /// Copy an object straight from a reader to the output.
+    ///
+    /// Much faster than [`Writer::add`] for filter-style jobs: the object is
+    /// copied as raw bytes out of the reader's decode buffer instead of being
+    /// materialised into an [`Object`] and rebuilt field by field.
+    ///
+    /// Being a verbatim copy, it also **preserves metadata that [`Writer::add`]
+    /// drops** — timestamp, uid, changeset and user name, none of which
+    /// [`Object`] can carry. If the source reader was opened with
+    /// [`ReadOptions::metadata`] set to `false` that metadata was never decoded,
+    /// and the copy writes it empty.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), rusmium::Error> {
+    /// use rusmium::{ObjectKind, Reader, Writer};
+    /// let mut reader = Reader::open("map.osm.pbf")?;
+    /// let mut writer = Writer::create("ways.osm.pbf")?;
+    /// while let Some(obj) = reader.next_ref() {
+    ///     if obj.kind() == ObjectKind::Way {
+    ///         writer.copy(&obj)?;
+    ///     }
+    /// }
+    /// writer.finish()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn copy(&mut self, obj: &ObjectRef<'_>) -> Result<(), Error> {
+        ffi::writer_copy(self.inner.pin_mut(), obj.cursor)?;
         Ok(())
     }
 

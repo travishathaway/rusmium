@@ -9,10 +9,12 @@ rust::String osmium_version() {
     return rust::String(LIBOSMIUM_VERSION_STRING);
 }
 
-std::unique_ptr<OsmReader> open_reader(rust::Str path) {
+std::unique_ptr<OsmReader> open_reader(rust::Str path, std::uint8_t entity_bits,
+                                       bool read_metadata) {
     // osmium::io::Reader opens the file in its constructor and throws on
     // failure; cxx turns any thrown std::exception into a Rust `Err`.
-    return std::make_unique<OsmReader>(std::string(path));
+    return std::make_unique<OsmReader>(std::string(path), entity_bits,
+                                       read_metadata);
 }
 
 std::unique_ptr<Cursor> make_cursor(OsmReader& reader) {
@@ -35,6 +37,23 @@ std::uint32_t object_version(const Cursor& cursor) {
     return cursor.current().version();
 }
 
+std::int64_t object_timestamp(const Cursor& cursor) {
+    const auto ts = cursor.current().timestamp();
+    return ts.valid() ? static_cast<std::int64_t>(ts.seconds_since_epoch()) : 0;
+}
+
+std::uint32_t object_uid(const Cursor& cursor) {
+    return cursor.current().uid();
+}
+
+rust::String object_user(const Cursor& cursor) {
+    return rust::String(cursor.current().user());
+}
+
+std::int64_t object_changeset(const Cursor& cursor) {
+    return static_cast<std::int64_t>(cursor.current().changeset());
+}
+
 bool node_location_valid(const Cursor& cursor) {
     const auto& node = static_cast<const osmium::Node&>(cursor.current());
     return node.location().valid();
@@ -46,6 +65,10 @@ double node_lon(const Cursor& cursor) {
 
 double node_lat(const Cursor& cursor) {
     return static_cast<const osmium::Node&>(cursor.current()).location().lat();
+}
+
+std::size_t tag_count(const Cursor& cursor) {
+    return cursor.current().tags().size();
 }
 
 rust::Vec<rust::String> tag_keys(const Cursor& cursor) {
@@ -73,6 +96,15 @@ rust::Vec<std::int64_t> way_node_refs(const Cursor& cursor) {
     return out;
 }
 
+void way_node_refs_into(const Cursor& cursor, rust::Vec<std::int64_t>& out) {
+    out.clear();
+    const auto& nodes = static_cast<const osmium::Way&>(cursor.current()).nodes();
+    out.reserve(nodes.size());
+    for (const osmium::NodeRef& nr : nodes) {
+        out.push_back(nr.ref());
+    }
+}
+
 rust::Vec<std::uint8_t> relation_member_kinds(const Cursor& cursor) {
     rust::Vec<std::uint8_t> out;
     const auto& rel = static_cast<const osmium::Relation&>(cursor.current());
@@ -98,6 +130,20 @@ rust::Vec<rust::String> relation_member_roles(const Cursor& cursor) {
         out.push_back(rust::String(m.role()));
     }
     return out;
+}
+
+void relation_members_into(const Cursor& cursor, rust::Vec<std::uint8_t>& kinds,
+                           rust::Vec<std::int64_t>& refs) {
+    kinds.clear();
+    refs.clear();
+    const auto& members =
+        static_cast<const osmium::Relation&>(cursor.current()).members();
+    kinds.reserve(members.size());
+    refs.reserve(members.size());
+    for (const osmium::RelationMember& m : members) {
+        kinds.push_back(static_cast<std::uint8_t>(m.type()));
+        refs.push_back(m.ref());
+    }
 }
 
 // --- writing ---
@@ -139,6 +185,7 @@ void OsmWriter::add_node(std::int64_t id, std::uint32_t version,
         add_tags(buffer_, builder, keys, values);
     }
     buffer_.commit();
+    flush_if_full();
 }
 
 void OsmWriter::add_way(std::int64_t id, std::uint32_t version,
@@ -161,6 +208,7 @@ void OsmWriter::add_way(std::int64_t id, std::uint32_t version,
         add_tags(buffer_, builder, keys, values);
     }
     buffer_.commit();
+    flush_if_full();
 }
 
 void OsmWriter::add_relation(std::int64_t id, std::uint32_t version,
@@ -187,10 +235,32 @@ void OsmWriter::add_relation(std::int64_t id, std::uint32_t version,
         add_tags(buffer_, builder, keys, values);
     }
     buffer_.commit();
+    flush_if_full();
+}
+
+void OsmWriter::copy_item(const osmium::memory::Item& item) {
+    // Buffer::push_back is add_item() + commit(): a std::copy_n of
+    // item.padded_size() bytes. Objects in an osmium buffer are self-contained
+    // and relocatable, so copying one really is just those bytes.
+    buffer_.push_back(item);
+    flush_if_full();
+}
+
+void OsmWriter::flush_if_full() {
+    if (buffer_.committed() < buffer_size) {
+        return;
+    }
+    writer_(std::move(buffer_));
+    // `buffer_` is left empty by the move; give it a fresh allocation. Growth
+    // is still enabled so a single outsized object can never fail to fit.
+    buffer_ = osmium::memory::Buffer{buffer_size,
+                                     osmium::memory::Buffer::auto_grow::yes};
 }
 
 void OsmWriter::finish() {
-    writer_(std::move(buffer_));
+    if (buffer_.committed() > 0) {
+        writer_(std::move(buffer_));
+    }
     writer_.close();
 }
 
@@ -221,6 +291,10 @@ void writer_add_relation(OsmWriter& writer, std::int64_t id,
                          const rust::Vec<rust::String>& values) {
     writer.add_relation(id, version, member_kinds, member_refs, member_roles,
                         keys, values);
+}
+
+void writer_copy(OsmWriter& writer, const Cursor& cursor) {
+    writer.copy_item(cursor.current());
 }
 
 void finish_writer(OsmWriter& writer) {
