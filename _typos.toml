@@ -1,0 +1,30 @@
+# Configuration for `typos`, run by the pre-commit hook of the same name.
+#
+#   pixi run -e dev spell        # report misspellings
+#   pixi run -e dev spell-fix    # rewrite them in place
+#
+# `typos` honors .gitignore, so /target and /.pixi are skipped automatically.
+
+[default]
+# Enforce US English: flags "honour", "behaviour", "materialise", "initialise"
+# and the rest of the British variants, and corrects them to the US spelling.
+locale = "en-us"
+
+[default.extend-words]
+# `<nd>` is the OSM XML element for a way's node reference, not a typo of "and".
+nd = "nd"
+# Both spellings are standard; the specs already use this one.
+unparseable = "unparseable"
+
+[default.extend-identifiers]
+# OSM's own vocabulary is British-spelled. Tag keys and relation roles are data,
+# not prose — correcting them would break the files they describe, so exempt
+# each one by its exact identifier rather than whitelisting the word "centre".
+admin_centre = "admin_centre"
+
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "pixi.lock",
+    "*.osm.pbf",
+]

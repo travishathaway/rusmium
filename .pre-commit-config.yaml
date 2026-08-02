@@ -30,6 +30,17 @@ repos:
 
   - repo: local
     hooks:
+      - id: typos
+        name: typos
+        # Spell check, including a US-vs-British English locale check. Config
+        # (and the exemptions for OSM's British-spelled vocabulary) lives in
+        # _typos.toml. Run over the whole tree rather than the staged files so
+        # the result matches `pixi run -e dev spell`.
+        entry: pixi run -e dev spell
+        language: system
+        types: [text]
+        pass_filenames: false
+
       - id: cargo-fmt
         name: cargo fmt
         entry: pixi run -e dev fmt

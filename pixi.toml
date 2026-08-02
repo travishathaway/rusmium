@@ -37,12 +37,17 @@ rust = "*"
 [feature.dev.dependencies]
 # Drop-in pre-commit replacement, reads .pre-commit-config.yaml.
 prek = ">=0.4.11,<0.5"
+# Spell checker; configured in _typos.toml to enforce US English spellings.
+typos = ">=1.48,<2"
 
 [feature.dev.tasks]
 # Install the git hooks once per clone.
 hooks = "prek install --hook-type pre-commit --hook-type pre-push"
 # Run every pre-commit-stage hook over the whole tree, as CI does.
 check = "prek run --all-files"
+# Report misspellings and British spellings; `spell-fix` rewrites them in place.
+spell = "typos"
+spell-fix = "typos --write-changes"
 
 [environments]
 # One solve group so both environments resolve to identical package versions.

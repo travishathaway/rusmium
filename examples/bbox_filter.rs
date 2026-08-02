@@ -233,7 +233,7 @@ fn write(input: &Path, output: &Path, sel: &Selection) -> Result<Stats, rusmium:
     let mut reader = Reader::open(input)?;
     let mut stats = Stats::default();
 
-    // Nothing here materialises an object: the keep test reads two fields, and
+    // Nothing here materializes an object: the keep test reads two fields, and
     // a kept object is memcpy'd from the decode buffer to the output buffer.
     // Tags, node refs and members are never touched.
     while let Some(obj) = reader.next_ref() {

@@ -343,7 +343,7 @@ impl ReadOptions {
     /// user name, uid, timestamp and changeset of every object, and
     /// [`Object::version`] reads as `0`.
     ///
-    /// Honoured by the **PBF** reader only — libosmium's XML parser always
+    /// Honored by the **PBF** reader only — libosmium's XML parser always
     /// reads metadata, so this is a no-op on `.osm` input.
     pub fn metadata(mut self, yes: bool) -> Self {
         self.metadata = yes;
@@ -438,7 +438,7 @@ impl Reader {
     /// This is the fast path for filtering and counting: accessors on the
     /// returned [`ObjectRef`] fetch on demand, so a caller that only looks at
     /// ids pays only for ids. Pair it with [`Writer::copy`] to move objects
-    /// through without ever materialising them.
+    /// through without ever materializing them.
     ///
     /// The view borrows the reader, so it cannot be held across the next call
     /// or stored — the borrow checker enforces that. Call
@@ -475,7 +475,7 @@ impl Reader {
 ///
 /// Nothing is copied until you ask for it. Each accessor crosses into C++ on
 /// demand, so the cost of an object is the cost of the fields you actually
-/// read — unlike [`Object`], which materialises everything up front.
+/// read — unlike [`Object`], which materializes everything up front.
 ///
 /// Yielded by [`Reader::next_ref`], and valid only until the reader advances.
 pub struct ObjectRef<'a> {
@@ -714,7 +714,7 @@ impl Writer {
     ///
     /// Much faster than [`Writer::add`] for filter-style jobs: the object is
     /// copied as raw bytes out of the reader's decode buffer instead of being
-    /// materialised into an [`Object`] and rebuilt field by field.
+    /// materialized into an [`Object`] and rebuilt field by field.
     ///
     /// Being a verbatim copy, it also **preserves metadata that [`Writer::add`]
     /// drops** — timestamp, uid, changeset and user name, none of which

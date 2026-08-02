@@ -3,7 +3,7 @@ name = "rusmium"
 version = "0.1.0"
 edition = "2021"
 description = "Idiomatic Rust bindings for the libosmium C++ OpenStreetMap library"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/thath/rusmium"
 
 [dependencies]

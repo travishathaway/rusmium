@@ -73,11 +73,27 @@ replacement, and configured in `.pre-commit-config.yaml`:
 
 | stage | hooks |
 | --- | --- |
-| pre-commit | file hygiene (whitespace, EOF, YAML/TOML, large files), `cargo fmt`, `cargo clippy` |
+| pre-commit | file hygiene (whitespace, EOF, YAML/TOML, large files), `typos`, `cargo fmt`, `cargo clippy` |
 | pre-push | `cargo test` — it builds the C++ shim, so it is too slow per commit |
 
 CI runs the same hook definitions rather than a parallel list of its own, so the
 two cannot drift apart. It also runs the test suite on Linux and macOS.
+
+### Spelling
+
+Prose in this repo — docs, comments, identifiers — uses **US English**. The
+`typos` hook enforces it via `locale = "en-us"` in `_typos.toml`, so the British
+`-our` and `-ise` variants fail the build with the US spelling suggested:
+
+```bash
+pixi run -e dev spell       # report
+pixi run -e dev spell-fix   # rewrite in place
+```
+
+OSM's own vocabulary is British-spelled and is **data, not prose** — the
+`admin_centre` relation role, for instance, must stay as it is. Exempt those by
+their exact identifier under `[default.extend-identifiers]` rather than
+whitelisting the bare word, so the check still catches the word in prose.
 
 ## Filtering by bounding box
 
@@ -107,7 +123,7 @@ CRTP visitor — none of which cross an FFI boundary directly. rusmium therefore
 uses a layered design:
 
 ```
-  rusmium            safe, idiomatic Rust API  (Reader/Writer/Object, Iterator)
+  rusmium            safe, idiomatic Rust API  (Reader/Writer, Object/ObjectRef)
   ─────────────────────────────────────────────────────────────────────────
   src/ffi.rs         cxx bridge — the single concrete ABI
   ─────────────────────────────────────────────────────────────────────────
@@ -120,37 +136,61 @@ uses a layered design:
 Key design points:
 
 - **Reading is pull-based.** The shim exposes a cursor (`advance()` + field
-  accessors) built on osmium's `InputIterator`; the Rust side wraps it as a
-  standard `Iterator<Item = Object>`.
-- **Copy-out ownership.** osmium objects are non-owning views into a buffer that
-  the reader recycles. To keep that hazard out of the public API, every accessor
-  copies data into owned Rust values. An `Object` you retain stays valid and
-  unchanged after the iterator advances — at the cost of an allocation per
-  object/tag.
-- **Writing builds into a buffer.** The shim wraps osmium's builders
-  (`NodeBuilder`/`WayBuilder`/`RelationBuilder`) and flushes on `finish()`.
+  accessors) built on osmium's `InputIterator`.
+- **Two read models, owned and borrowed.** osmium objects are non-owning views
+  into a buffer the reader recycles, and that hazard must not reach the public
+  API. So there are two safe ways to read:
+  - `Iterator<Item = Object>` copies each object out. An `Object` you retain
+    stays valid after the iterator advances, at the cost of an allocation per
+    object and per tag.
+  - `Reader::next_ref() -> Option<ObjectRef<'_>>` borrows the object in place
+    and fetches fields on demand, so a pass that only reads ids costs only ids.
+    The view borrows the reader, so the borrow checker — not documentation —
+    prevents holding it across an advance.
+- **Writing either rebuilds or copies through.** `Writer::add` builds from an
+  owned `Object` via osmium's builders; `Writer::copy` takes an `ObjectRef` and
+  memcpys it straight from the decode buffer into the output. Buffers are handed
+  to the writer every 10 MiB, so encoding overlaps with reading.
+- **`Object` carries no metadata.** Timestamp, uid, changeset and user have no
+  home in the owned type, so `Writer::add` drops them. `Writer::copy` preserves
+  them, and `ObjectRef` is the only way to read them.
 - **Structured data crosses as primitives and `Vec`s** (never shared cxx
   structs), keeping the shim header self-contained and free of include-ordering
-  hazards.
+  hazards. Bulk accessors fill caller-owned buffers so a hot loop can reuse one
+  allocation for a whole pass.
 - **Reproducible + ABI-matched.** Pulling `cxx-compiler` and `rust` from the
   same conda-forge env means the shim is compiled ABI-compatible with the
   prebuilt native libraries it links. `build.rs` bakes an rpath so binaries and
   tests resolve those libraries at run time without an activated environment.
+- **The native side is always optimized.** libosmium and protozero are
+  header-only, so the whole PBF codec compiles into the shim. `build.rs` pins it
+  to `-O2 -DNDEBUG` regardless of the cargo profile — otherwise a debug build
+  ships an unoptimized decoder with osmium's asserts live, which costs several
+  times the wall clock on a real file.
 
 ## Scope (v1)
 
-**Supported:** reading OSM files (PBF and XML) as an iterator with ids,
-versions, node locations, tags, way node references, and relation members;
-constructing and writing those objects back out; full read→write→read
-round-trips.
+**Supported:** reading OSM files (PBF and XML) with ids, versions, node
+locations, tags, way node references, and relation members, either as owned
+objects or as borrowed in-place views; object metadata (timestamp, uid,
+changeset, user) via `ObjectRef`; skipping metadata, tags or whole entity kinds
+at read time with `ReadOptions`; constructing and writing objects, or copying
+them straight through from a reader; full read→write→read round-trips.
 
 **Non-goals (deferred, not precluded):**
 
-- **Zero-copy / borrowed objects** — v1 is copy-out only.
+- **Metadata on the owned `Object`** — readable through `ObjectRef` and
+  preserved by `Writer::copy`, but not representable in `Object` itself, so
+  `Writer::add` cannot write it.
 - **Geometry assembly** — way/relation members are exposed as references, not
   resolved into coordinates/geometries.
-- **A native osmium visitor/handler API** — the iterator is the only read model.
+- **A native osmium visitor/handler API** — reading is pull-based only.
 
 ## License
 
-Licensed under either of MIT or Apache-2.0, at your option.
+MIT — see [LICENSE](LICENSE).
+
+The native libraries this crate builds against carry their own permissive
+licenses, compatible with the above: libosmium is
+[BSL-1.0](https://www.boost.org/LICENSE_1_0.txt) and protozero is BSD-2-Clause.
+Distributing a binary built from this crate means shipping their notices too.

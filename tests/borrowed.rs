@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use rusmium::{Body, ObjectKind, ReadOptions, Reader, Writer};
+use rusmium::{Body, Entities, ObjectKind, ReadOptions, Reader, Writer};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -204,6 +204,44 @@ fn metadata_is_absent_when_not_requested() {
         any = true;
     }
     assert!(any);
+
+    let _ = std::fs::remove_file(&pbf);
+}
+
+#[test]
+fn entity_filtering_yields_only_the_requested_kinds() {
+    // Unlike `metadata`, this one is honored by both parsers, so check each.
+    let pbf = out_path("entities.osm.pbf");
+    let mut w = Writer::create(&pbf).unwrap();
+    let mut src = Reader::open(fixture("sample.osm")).unwrap();
+    while let Some(obj) = src.next_ref() {
+        w.copy(&obj).unwrap();
+    }
+    w.finish().unwrap();
+
+    // sample.osm holds 3 nodes, 1 way, 1 relation.
+    let cases = [
+        (Entities::ALL, (3, 1, 1)),
+        (Entities::NODE, (3, 0, 0)),
+        (Entities::WAY, (0, 1, 0)),
+        (Entities::RELATION, (0, 0, 1)),
+        (Entities::NODE | Entities::WAY, (3, 1, 0)),
+    ];
+
+    for (label, path) in [("xml", fixture("sample.osm")), ("pbf", pbf.clone())] {
+        for (entities, expected) in cases {
+            let opts = ReadOptions::default().entities(entities);
+            let mut counts = (0, 0, 0);
+            for obj in Reader::open_with(&path, opts).unwrap() {
+                match obj.kind() {
+                    ObjectKind::Node => counts.0 += 1,
+                    ObjectKind::Way => counts.1 += 1,
+                    ObjectKind::Relation => counts.2 += 1,
+                }
+            }
+            assert_eq!(counts, expected, "{label} with {entities:?}");
+        }
+    }
 
     let _ = std::fs::remove_file(&pbf);
 }
